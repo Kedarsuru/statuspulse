@@ -1,0 +1,65 @@
+name: Deploy Pipeline
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------------- LOGIN GHCR ----------------
+      - name: Login to GHCR
+        run: echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # ---------------- BUILD & TAG ----------------
+      - name: Build and tag image
+        run: |
+          docker build -t ghcr.io/${{ github.repository }}/statuspulse:${{ github.sha }} .
+          docker tag ghcr.io/${{ github.repository }}/statuspulse:${{ github.sha }} ghcr.io/${{ github.repository }}/statuspulse:latest
+
+      # ---------------- PUSH ----------------
+      - name: Push image
+        run: |
+          docker push ghcr.io/${{ github.repository }}/statuspulse:${{ github.sha }}
+          docker push ghcr.io/${{ github.repository }}/statuspulse:latest
+
+      # ---------------- DEPLOY ----------------
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd ~/statuspulse
+
+            OLD=$(docker compose images -q app || true)
+
+            docker compose pull
+            docker compose up -d
+
+            sleep 20
+
+            if curl -f http://localhost:8000/health; then
+              echo "Deployment successful"
+            else
+              echo "Health check failed - rolling back"
+              docker tag $OLD ghcr.io/rollback:latest
+              docker compose down
+              docker compose up -d
+              exit 1
+            fi
+
+      # ---------------- NOTIFICATION ----------------
+      - name: Send Discord notification
+        if: always()
+        run: |
+          STATUS=$([[ $? -eq 0 ]] && echo "SUCCESS" || echo "FAILED")
+          curl -H "Content-Type: application/json" \
+          -d "{\"content\": \"Deployment $STATUS for StatusPulse\"}" \
+          ${{ secrets.DISCORD_WEBHOOK }}

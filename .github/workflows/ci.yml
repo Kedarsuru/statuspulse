@@ -1,0 +1,61 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ---------------- LINT ----------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint Python code
+        run: ruff app/
+
+      # ---------------- DOCKER LINT ----------------
+      - name: Run hadolint on Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+      # ---------------- BUILD ----------------
+      - name: Build Docker image
+        run: docker build -t statuspulse:test .
+
+      # ---------------- START STACK ----------------
+      - name: Start full stack
+        run: docker compose up -d --build
+
+      - name: Wait for services
+        run: sleep 25
+
+      # ---------------- TESTS ----------------
+      - name: Run integration tests
+        run: bash tests/test_integration.sh | tee test_output.txt
+
+      # ---------------- ARTIFACT UPLOAD ----------------
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test_output.txt
+
+      # ---------------- TEARDOWN ----------------
+      - name: Shutdown stack
+        if: always()
+        run: docker compose down -v
