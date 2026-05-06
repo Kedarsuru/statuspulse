@@ -24,24 +24,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---------------- BUILD + TAG ----------------
-      - name: Build and tag image
+      # ---------------- SET IMAGE NAME (FIX LOWERCASE ISSUE) ----------------
+      - name: Set image name
         run: |
-          IMAGE=ghcr.io/${{ github.repository }}
-          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')   # FIX uppercase issue
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/statuspulse" >> $GITHUB_ENV
 
+      # ---------------- BUILD IMAGE ----------------
+      - name: Build Docker image
+        run: |
           docker build -t $IMAGE:${{ github.sha }} .
           docker tag $IMAGE:${{ github.sha }} $IMAGE:latest
 
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-
-      # ---------------- PUSH ----------------
-      - name: Push image
+      # ---------------- PUSH IMAGE ----------------
+      - name: Push Docker image
         run: |
           docker push $IMAGE:${{ github.sha }}
           docker push $IMAGE:latest
 
-      # ---------------- DEPLOY TO SERVER ----------------
+      # ---------------- DEPLOY ON SERVER ----------------
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -51,32 +51,33 @@ jobs:
           script: |
             cd ~/statuspulse
 
-            docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
-
-            docker pull $IMAGE:latest || true
+            echo "Pulling latest image..."
+            docker pull $IMAGE:latest
 
             docker compose down
             docker compose up -d
 
             sleep 15
 
+            echo "Health check..."
             if curl -f http://localhost:8000/health; then
-              echo "Deployment SUCCESS"
+              echo "DEPLOY SUCCESS"
             else
-              echo "FAILED → rollback"
+              echo "DEPLOY FAILED - rolling back"
               docker compose down
               exit 1
             fi
 
-      # ---------------- NOTIFICATION ----------------
-      - name: Discord success
+      # ---------------- SUCCESS NOTIFICATION ----------------
+      - name: Notify success
         if: success()
         run: |
           curl -H "Content-Type: application/json" \
           -d '{"content":"✅ Deployment SUCCESS"}' \
           ${{ secrets.DISCORD_WEBHOOK }}
 
-      - name: Discord failure
+      # ---------------- FAILURE NOTIFICATION ----------------
+      - name: Notify failure
         if: failure()
         run: |
           curl -H "Content-Type: application/json" \
