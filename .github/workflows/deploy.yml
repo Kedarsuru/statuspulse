@@ -7,27 +7,31 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    needs: ci   # 🔥 IMPORTANT
+
+    permissions:
+      contents: read
+      packages: write
 
     steps:
+      # ---------------- CHECKOUT ----------------
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------------- LOGIN ----------------
+      # ---------------- LOGIN GHCR ----------------
       - name: Login to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        run: echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       # ---------------- BUILD ----------------
       - name: Build image
         run: |
-          IMAGE=ghcr.io/${{ github.repository }}
+          IMAGE=ghcr.io/kedarsuru/statuspulse
           docker build -t $IMAGE:${{ github.sha }} .
           docker tag $IMAGE:${{ github.sha }} $IMAGE:latest
 
       # ---------------- PUSH ----------------
       - name: Push image
         run: |
-          IMAGE=ghcr.io/${{ github.repository }}
+          IMAGE=ghcr.io/kedarsuru/statuspulse
           docker push $IMAGE:${{ github.sha }}
           docker push $IMAGE:latest
 
@@ -41,18 +45,27 @@ jobs:
           script: |
             cd ~/statuspulse
 
-            PREVIOUS=$(docker images ghcr.io/${{ github.repository }} --format "{{.Tag}}" | head -n 2 | tail -n 1)
+            IMAGE=ghcr.io/kedarsuru/statuspulse
 
-            docker pull ghcr.io/${{ github.repository }}:latest
+            # Pull latest image
+            docker pull $IMAGE:latest
+
+            # Backup current container (for rollback)
+            docker tag $IMAGE:latest statuspulse:backup || true
+
+            # Deploy new version
+            docker compose down
             docker compose up -d
 
             sleep 15
 
+            # Health check
             if curl -f http://localhost:8000/health; then
-              echo "Deployment successful"
+              echo "Deployment SUCCESS"
             else
-              echo "Health failed → rollback"
-              docker pull ghcr.io/${{ github.repository }}:$PREVIOUS
+              echo "FAILED → Rolling back"
+
+              docker tag statuspulse:backup $IMAGE:latest
               docker compose down
               docker compose up -d
               exit 1
@@ -61,12 +74,14 @@ jobs:
       # ---------------- NOTIFICATIONS ----------------
       - name: Notify success
         if: success()
-        run: curl -H "Content-Type: application/json" \
+        run: |
+          curl -H "Content-Type: application/json" \
           -d '{"content": "✅ Deployment SUCCESS"}' \
           ${{ secrets.DISCORD_WEBHOOK }}
 
       - name: Notify failure
         if: failure()
-        run: curl -H "Content-Type: application/json" \
+        run: |
+          curl -H "Content-Type: application/json" \
           -d '{"content": "❌ Deployment FAILED"}' \
           ${{ secrets.DISCORD_WEBHOOK }}
