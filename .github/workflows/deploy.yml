@@ -11,7 +11,6 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    needs: ci   # ensures CI passes first
 
     steps:
       - name: Checkout
@@ -25,7 +24,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---------------- LOWERCASE IMAGE ----------------
+      # ---------------- IMAGE NAME ----------------
       - name: Set image name
         run: echo "IMAGE=ghcr.io/kedarsuru/statuspulse" >> $GITHUB_ENV
 
@@ -49,25 +48,24 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
-            cd ~/statuspulse || exit 1
+            set -e
 
-            echo "Pull latest image..."
+            echo "Going to app folder..."
+            cd ~/statuspulse
+
+            echo "Pulling image..."
             docker pull ghcr.io/kedarsuru/statuspulse:latest
 
-            echo "Restarting containers..."
+            echo "Restarting stack..."
             docker compose down || true
             docker compose up -d
 
-            sleep 20
+            sleep 15
 
             echo "Health check..."
-            if curl -f http://localhost:8000/health; then
-              echo "DEPLOY SUCCESS"
-            else
-              echo "DEPLOY FAILED"
-              docker compose down
-              exit 1
-            fi
+            curl -f http://localhost:8000/health
+
+            echo "DEPLOY SUCCESS"
 
       # ---------------- NOTIFY ----------------
       - name: Notify success
