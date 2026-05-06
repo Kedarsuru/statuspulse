@@ -4,38 +4,44 @@ on:
   push:
     branches: ["main"]
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: read
-      packages: write
-
     steps:
-      # ---------------- CHECKOUT ----------------
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      # ---------------- LOGIN GHCR ----------------
+      # ---------------- LOGIN TO GHCR ----------------
       - name: Login to GHCR
-        run: echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---------------- BUILD ----------------
-      - name: Build image
+      # ---------------- BUILD + TAG ----------------
+      - name: Build and tag image
         run: |
-          IMAGE=ghcr.io/kedarsuru/statuspulse
+          IMAGE=ghcr.io/${{ github.repository }}
+          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')   # FIX uppercase issue
+
           docker build -t $IMAGE:${{ github.sha }} .
           docker tag $IMAGE:${{ github.sha }} $IMAGE:latest
+
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
       # ---------------- PUSH ----------------
       - name: Push image
         run: |
-          IMAGE=ghcr.io/kedarsuru/statuspulse
           docker push $IMAGE:${{ github.sha }}
           docker push $IMAGE:latest
 
-      # ---------------- DEPLOY ----------------
+      # ---------------- DEPLOY TO SERVER ----------------
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -45,43 +51,34 @@ jobs:
           script: |
             cd ~/statuspulse
 
-            IMAGE=ghcr.io/kedarsuru/statuspulse
+            docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
 
-            # Pull latest image
-            docker pull $IMAGE:latest
+            docker pull $IMAGE:latest || true
 
-            # Backup current container (for rollback)
-            docker tag $IMAGE:latest statuspulse:backup || true
-
-            # Deploy new version
             docker compose down
             docker compose up -d
 
             sleep 15
 
-            # Health check
             if curl -f http://localhost:8000/health; then
               echo "Deployment SUCCESS"
             else
-              echo "FAILED → Rolling back"
-
-              docker tag statuspulse:backup $IMAGE:latest
+              echo "FAILED → rollback"
               docker compose down
-              docker compose up -d
               exit 1
             fi
 
-      # ---------------- NOTIFICATIONS ----------------
-      - name: Notify success
+      # ---------------- NOTIFICATION ----------------
+      - name: Discord success
         if: success()
         run: |
           curl -H "Content-Type: application/json" \
-          -d '{"content": "✅ Deployment SUCCESS"}' \
+          -d '{"content":"✅ Deployment SUCCESS"}' \
           ${{ secrets.DISCORD_WEBHOOK }}
 
-      - name: Notify failure
+      - name: Discord failure
         if: failure()
         run: |
           curl -H "Content-Type: application/json" \
-          -d '{"content": "❌ Deployment FAILED"}' \
+          -d '{"content":"❌ Deployment FAILED"}' \
           ${{ secrets.DISCORD_WEBHOOK }}

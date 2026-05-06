@@ -6,12 +6,15 @@ on:
   pull_request:
     branches: ["main"]
 
+permissions:
+  contents: read
+  packages: write   # IMPORTANT for GHCR
+
 jobs:
   ci:
     runs-on: ubuntu-latest
 
     steps:
-      # ---------------- CHECKOUT ----------------
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -25,24 +28,22 @@ jobs:
         run: |
           pip install ruff
 
-      # ---------------- LINT ----------------
+      # FIXED RUFF (your error was wrong command)
       - name: Lint Python code
         run: ruff check app/
 
       # ---------------- DOCKER LINT ----------------
-      - name: Run hadolint on Dockerfile
+      - name: Run hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
-          ignore: DL3008
-          failure-threshold: warning
 
       # ---------------- BUILD IMAGE ----------------
       - name: Build Docker image
         run: docker build -t statuspulse:test .
 
       # ---------------- START STACK ----------------
-      - name: Start full stack
+      - name: Start stack
         run: docker compose up -d --build
 
       - name: Wait for services
@@ -50,9 +51,7 @@ jobs:
 
       # ---------------- TESTS ----------------
       - name: Run integration tests
-        run: |
-          set -o pipefail
-          bash tests/test_integration.sh | tee test_output.txt
+        run: bash tests/test_integration.sh | tee test_output.txt
 
       # ---------------- ARTIFACT ----------------
       - name: Upload test results
