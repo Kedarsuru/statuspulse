@@ -1,77 +1,72 @@
-name: CI Pipeline
+name: Deploy Pipeline
 
 on:
   push:
     branches: ["main"]
-  pull_request:
-    branches: ["main"]
 
 jobs:
-  ci:
+  deploy:
     runs-on: ubuntu-latest
+    needs: ci   # 🔥 IMPORTANT
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------------- PYTHON LINT ----------------
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install ruff
-        run: pip install ruff
-
-      - name: Run ruff
-        run: ruff app/
-
-      # ---------------- DOCKER LINT ----------------
-      - name: Hadolint
-        uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: Dockerfile
+      # ---------------- LOGIN ----------------
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       # ---------------- BUILD ----------------
       - name: Build image
-        run: docker build -t statuspulse:test .
-
-      # ---------------- ENV FILE ----------------
-      - name: Create .env
         run: |
-          echo "DB_HOST=db" >> .env
-          echo "DB_NAME=postgres" >> .env
-          echo "DB_USER=postgres" >> .env
-          echo "DB_PASSWORD=postgres" >> .env
-          echo "REDIS_HOST=redis" >> .env
+          IMAGE=ghcr.io/${{ github.repository }}
+          docker build -t $IMAGE:${{ github.sha }} .
+          docker tag $IMAGE:${{ github.sha }} $IMAGE:latest
 
-      # ---------------- START ----------------
-      - name: Start stack
-        run: docker compose up -d
-
-      # ---------------- WAIT ----------------
-      - name: Wait for API
+      # ---------------- PUSH ----------------
+      - name: Push image
         run: |
-          for i in {1..10}; do
-            curl -f http://localhost:8000/health && break
-            sleep 5
-          done
+          IMAGE=ghcr.io/${{ github.repository }}
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
 
-      # ---------------- TEST ----------------
-      - name: Run tests
-        run: |
-          chmod +x tests/test_integration.sh
-          bash tests/test_integration.sh | tee test_output.txt
-
-      # ---------------- ARTIFACT ----------------
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
+      # ---------------- DEPLOY ----------------
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          name: test-results
-          path: test_output.txt
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd ~/statuspulse
 
-      # ---------------- CLEANUP ----------------
-      - name: Shutdown
-        if: always()
-        run: docker compose down -v
+            PREVIOUS=$(docker images ghcr.io/${{ github.repository }} --format "{{.Tag}}" | head -n 2 | tail -n 1)
+
+            docker pull ghcr.io/${{ github.repository }}:latest
+            docker compose up -d
+
+            sleep 15
+
+            if curl -f http://localhost:8000/health; then
+              echo "Deployment successful"
+            else
+              echo "Health failed → rollback"
+              docker pull ghcr.io/${{ github.repository }}:$PREVIOUS
+              docker compose down
+              docker compose up -d
+              exit 1
+            fi
+
+      # ---------------- NOTIFICATIONS ----------------
+      - name: Notify success
+        if: success()
+        run: curl -H "Content-Type: application/json" \
+          -d '{"content": "✅ Deployment SUCCESS"}' \
+          ${{ secrets.DISCORD_WEBHOOK }}
+
+      - name: Notify failure
+        if: failure()
+        run: curl -H "Content-Type: application/json" \
+          -d '{"content": "❌ Deployment FAILED"}' \
+          ${{ secrets.DISCORD_WEBHOOK }}
