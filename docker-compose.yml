@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   app:
-    build: .
+    image: ghcr.io/Kedarsuru/statuspulse:latest
     container_name: statuspulse_app
     env_file:
       - .env
