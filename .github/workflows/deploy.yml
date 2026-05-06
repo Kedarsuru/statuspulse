@@ -1,65 +1,77 @@
-name: Deploy Pipeline
+name: CI Pipeline
 
 on:
   push:
     branches: ["main"]
+  pull_request:
+    branches: ["main"]
 
 jobs:
-  deploy:
+  ci:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------------- LOGIN GHCR ----------------
-      - name: Login to GHCR
-        run: echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-
-      # ---------------- BUILD & TAG ----------------
-      - name: Build and tag image
-        run: |
-          docker build -t ghcr.io/${{ github.repository }}/statuspulse:${{ github.sha }} .
-          docker tag ghcr.io/${{ github.repository }}/statuspulse:${{ github.sha }} ghcr.io/${{ github.repository }}/statuspulse:latest
-
-      # ---------------- PUSH ----------------
-      - name: Push image
-        run: |
-          docker push ghcr.io/${{ github.repository }}/statuspulse:${{ github.sha }}
-          docker push ghcr.io/${{ github.repository }}/statuspulse:latest
-
-      # ---------------- DEPLOY ----------------
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+      # ---------------- PYTHON LINT ----------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          script: |
-            cd ~/statuspulse
+          python-version: "3.11"
 
-            OLD=$(docker compose images -q app || true)
+      - name: Install ruff
+        run: pip install ruff
 
-            docker compose pull
-            docker compose up -d
+      - name: Run ruff
+        run: ruff app/
 
-            sleep 20
+      # ---------------- DOCKER LINT ----------------
+      - name: Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
 
-            if curl -f http://localhost:8000/health; then
-              echo "Deployment successful"
-            else
-              echo "Health check failed - rolling back"
-              docker tag $OLD ghcr.io/rollback:latest
-              docker compose down
-              docker compose up -d
-              exit 1
-            fi
+      # ---------------- BUILD ----------------
+      - name: Build image
+        run: docker build -t statuspulse:test .
 
-      # ---------------- NOTIFICATION ----------------
-      - name: Send Discord notification
-        if: always()
+      # ---------------- ENV FILE ----------------
+      - name: Create .env
         run: |
-          STATUS=$([[ $? -eq 0 ]] && echo "SUCCESS" || echo "FAILED")
-          curl -H "Content-Type: application/json" \
-          -d "{\"content\": \"Deployment $STATUS for StatusPulse\"}" \
-          ${{ secrets.DISCORD_WEBHOOK }}
+          echo "DB_HOST=db" >> .env
+          echo "DB_NAME=postgres" >> .env
+          echo "DB_USER=postgres" >> .env
+          echo "DB_PASSWORD=postgres" >> .env
+          echo "REDIS_HOST=redis" >> .env
+
+      # ---------------- START ----------------
+      - name: Start stack
+        run: docker compose up -d
+
+      # ---------------- WAIT ----------------
+      - name: Wait for API
+        run: |
+          for i in {1..10}; do
+            curl -f http://localhost:8000/health && break
+            sleep 5
+          done
+
+      # ---------------- TEST ----------------
+      - name: Run tests
+        run: |
+          chmod +x tests/test_integration.sh
+          bash tests/test_integration.sh | tee test_output.txt
+
+      # ---------------- ARTIFACT ----------------
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test_output.txt
+
+      # ---------------- CLEANUP ----------------
+      - name: Shutdown
+        if: always()
+        run: docker compose down -v
