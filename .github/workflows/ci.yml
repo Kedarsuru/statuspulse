@@ -8,7 +8,7 @@ on:
 
 permissions:
   contents: read
-  packages: write   # IMPORTANT for GHCR
+  packages: write
 
 jobs:
   ci:
@@ -18,50 +18,48 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ---------------- PYTHON SETUP ----------------
+      # ---------------- PYTHON ----------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          pip install ruff
+      - name: Install tools
+        run: pip install ruff
 
-      # FIXED RUFF (your error was wrong command)
-      - name: Lint Python code
+      - name: Lint Python
         run: ruff check app/
 
       # ---------------- DOCKER LINT ----------------
-      - name: Run hadolint
+      - name: Hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
 
-      # ---------------- BUILD IMAGE ----------------
-      - name: Build Docker image
+      # ---------------- BUILD ----------------
+      - name: Build image
         run: docker build -t statuspulse:test .
 
-      # ---------------- START STACK ----------------
+      # ---------------- RUN STACK ----------------
       - name: Start stack
         run: docker compose up -d --build
 
       - name: Wait for services
-        run: sleep 25
+        run: sleep 30
 
-      # ---------------- TESTS ----------------
-      - name: Run integration tests
+      # ---------------- TEST ----------------
+      - name: Run tests
         run: bash tests/test_integration.sh | tee test_output.txt
 
       # ---------------- ARTIFACT ----------------
-      - name: Upload test results
+      - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: test_output.txt
 
-      # ---------------- CLEANUP ----------------
-      - name: Shutdown stack
+      # ---------------- CLEAN ----------------
+      - name: Shutdown
         if: always()
         run: docker compose down -v
