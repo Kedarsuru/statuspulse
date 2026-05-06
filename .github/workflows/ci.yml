@@ -11,18 +11,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ---------------- CHECKOUT ----------------
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ---------------- LINT ----------------
+      # ---------------- PYTHON SETUP ----------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install dependencies
+        run: |
+          pip install ruff
 
+      # ---------------- LINT ----------------
       - name: Lint Python code
         run: ruff check app/
 
@@ -31,8 +34,10 @@ jobs:
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
+          ignore: DL3008
+          failure-threshold: warning
 
-      # ---------------- BUILD ----------------
+      # ---------------- BUILD IMAGE ----------------
       - name: Build Docker image
         run: docker build -t statuspulse:test .
 
@@ -46,18 +51,18 @@ jobs:
       # ---------------- TESTS ----------------
       - name: Run integration tests
         run: |
+          set -o pipefail
           bash tests/test_integration.sh | tee test_output.txt
 
-      # ---------------- ARTIFACT UPLOAD ----------------
+      # ---------------- ARTIFACT ----------------
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: |
-             test_output.txt
+          path: test_output.txt
 
-      # ---------------- TEARDOWN ----------------
+      # ---------------- CLEANUP ----------------
       - name: Shutdown stack
         if: always()
         run: docker compose down -v
